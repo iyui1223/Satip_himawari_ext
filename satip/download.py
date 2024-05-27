@@ -322,8 +322,8 @@ def _process_rss_images(
 
 def _determine_datetimes_to_download_files(
     directory: str,
-    start_date: datetime,
-    end_date: datetime,
+    start_date: str,
+    end_date: str,
     product_id: str,
 ) -> List[Tuple[datetime, datetime]]:
     """
@@ -342,6 +342,8 @@ def _determine_datetimes_to_download_files(
     # This is .bz2 as they should all be compressed files
     pattern = "*.bz2" if product_id == RSS_ID else "*.grb"
     # Get all days from start_date to end_date
+    start_date = pd.to_datetime(start_date).tz_localize(None)
+    end_date = pd.to_datetime(end_date).tz_localize(None)
     day_split = pd.date_range(start_date, end_date, freq="D")
 
     # Go through files and get all examples in each
