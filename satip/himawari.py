@@ -1,6 +1,7 @@
+#!/usr/bin/env python
+#!/usr/bin/env python
 '''
 This is a wrapper tool for ahi_hsd extension of satpy, which combines and converts the raw image data from Himawari satellite into single zarr file for easier access.
-
 '''
 
 import os
@@ -9,30 +10,32 @@ import numpy as np
 from satpy import Scene
 from PIL import Image
 import io
-import dask.array as da
+from datetime import datetime, timedelta
 
-def convert_to_zarr(input_dir, output_dir, compress=True):
-    files = [os.path.join(input_dir, f) for f in os.listdir(input_dir) if f.endswith('.DAT.bz2')]
-    scn = Scene(reader='ahi_hsd', filenames=files)
-    bands = ['B{:02d}'.format(i) for i in range(1, 3)]  # Testing with first 2 bands.
-    scn.load(bands)
+def list_input_dirs(base_dir, start_time, end_time):
+    """Generate directories based on start and end time with a step of 10 minutes."""
+    current_time = start_time
+    while current_time <= end_time:
+        subdir = os.path.join(base_dir, current_time.strftime('%Y%m%d_%H%M'))
+        if os.path.exists(subdir):
+            yield subdir
+        current_time += timedelta(minutes=10)
 
-    # Create Zarr output store
-    zarr_store = zarr.open_group(output_dir, mode='w')
-
-    # Assuming all bands with same resolution share the same area and time, use the first loaded band for these properties.
-    reference_band = scn[bands[0]]
-    lat, lon = reference_band.attrs['area'].get_lonlats()
-    time = reference_band.attrs['start_time'].strftime('%Y-%m-%dT%H:%M:%SZ')
+def process_file(input_file, zarr_store, timestamp, bands):
+    print(f"Processing file {input_file}")
     
-    # Save lat and lon as Zarr arrays
-    # TODO: Investigate whether the lat-long zarr arrays be used for all sensors which are saved on the same resolution? And for the different time period?
-    #       If not, can it be adjusted to be so without interpolating and only with slicing?
-    # TODO: How to save multiple (3) types of griddings for each bands in same zarr file? The separate resolution requires separate file organization?
-    zarr_store.create_dataset('latitude', data=lat, chunks=(1000, 1000), overwrite=True)
-    zarr_store.create_dataset('longitude', data=lon, chunks=(1000, 1000), overwrite=True)
-    zarr_store.attrs['time'] = time
-
+    scn = Scene(reader='ahi_hsd', filenames=[input_file])
+    
+    available_bands = scn.available_dataset_names()
+    bands = [band for band in ['B{:02d}'.format(i) for i in range(1, 17)] if band in available_bands]
+    scn.load(bands)
+    
+    # Create a subgroup for the current timestamp if it does not exist
+    if timestamp not in zarr_store:
+        time_group = zarr_store.create_group(timestamp, overwrite=False)
+    else:
+        time_group = zarr_store[timestamp]
+        
     for band in bands:
         data_array = scn[band].compute()
 
@@ -48,15 +51,41 @@ def convert_to_zarr(input_dir, output_dir, compress=True):
         # Save as JPEG to a buffer
         img = Image.fromarray(numpy_data)
         buffer = io.BytesIO()
-        img.save(buffer, format='JPEG', quality=85) # TODO: decide the preferred quality.
+        img.save(buffer, format='JPEG', quality=85)
         buffer.seek(0)  # Rewind the buffer to the beginning
 
         # Store JPEG compressed data in Zarr
-        zarr_store.create_dataset(band, data=np.frombuffer(buffer.getvalue(), dtype=np.uint8), overwrite=True)
+        time_group.create_dataset(band, data=np.frombuffer(buffer.getvalue(), dtype=np.uint8), overwrite=True)
 
+def convert_to_zarr(input_dirs, output_dir, compress=True):
+    zarr_store = zarr.open_group(output_dir, mode='a')
+
+    for input_dir in input_dirs:
+        print(f"Processing data in {input_dir}")
+        files = [os.path.join(input_dir, f) for f in os.listdir(input_dir) if f.endswith('.DAT.bz2')]
+        if not files:
+            print(f"No files found in {input_dir}")
+            continue
+
+        # Extract timestamp from the directory name (assuming the format is YYYYMMDD_HHMM)
+        timestamp = os.path.basename(input_dir)
+
+        for file in files:
+            process_file(file, zarr_store, timestamp, ['B{:02d}'.format(i) for i in range(1, 17)])
+    
     print("Conversion completed.")
 
 if __name__ == "__main__":
-    input_dir = r'C:\Users\iyui\AppData\Roaming\MobaXterm\home\Himawari\Satip_himawari_ext\satip\ahi_hsd\data'
+    base_dir = r'C:\Users\iyui\AppData\Roaming\MobaXterm\home\Himawari\Satip_himawari_ext\satip\ahi_hsd\data'
     output_dir = r'C:\Users\iyui\AppData\Roaming\MobaXterm\home\Himawari\Satip_himawari_ext\satip\ahi_hsd\zarr'
-    convert_to_zarr(input_dir, output_dir)
+    start_time = datetime(2021, 10, 1, 0, 0)
+    end_time = datetime(2021, 10, 1, 1, 0)
+    input_dirs = list_input_dirs(base_dir, start_time, end_time)
+
+    convert_to_zarr(input_dirs, output_dir)
+
+
+
+
+
+
